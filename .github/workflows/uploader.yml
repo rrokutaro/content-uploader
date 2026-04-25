@@ -1,0 +1,48 @@
+name: Uploader Server
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      MONGODB_URI:              ${{ secrets.MONGODB_URI }}
+      GDRIVE_SERVER_CONFIGS_ID: ${{ secrets.GDRIVE_SERVER_CONFIGS_ID }}
+      GDRIVE_CLIENT_SECRETS_ID: ${{ secrets.GDRIVE_CLIENT_SECRETS_ID }}
+      GDRIVE_CLIENT_TOKENS_ID:  ${{ secrets.GDRIVE_CLIENT_TOKENS_ID }}
+      UPLOADER_CONFIGS:         ${{ secrets.UPLOADER_CONFIGS }}
+      UPLOADER_MIN_GAP:         ${{ secrets.UPLOADER_MIN_GAP }}
+      UPLOADER_WINDOW:          ${{ secrets.UPLOADER_WINDOW }}
+      UPLOADER_DRY_RUN:         ${{ secrets.UPLOADER_DRY_RUN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 python3-pip unzip
+          pip3 install --upgrade "yt-dlp[default]" gdown --break-system-packages
+
+      - name: Install npm deps
+        run: npm install
+
+      - name: Run uploader
+        run: |
+          node uploader-server.js \
+            --configs "$UPLOADER_CONFIGS" \
+            --min-gap "$UPLOADER_MIN_GAP" \
+            --window "$UPLOADER_WINDOW" \
+            --log-file stdout
