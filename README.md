@@ -257,7 +257,7 @@ GDRIVE_CLIENT_SECRETS_ID=1aBcDeFgHiJkLmNoPqRsTuVwXyZ
 GDRIVE_CLIENT_TOKENS_ID=1aBcDeFgHiJkLmNoPqRsTuVwXyZ
 
 # Which configs to process
-UPLOADER_CONFIGS=movie-recaps.json
+UPLOADER_CONFIGS=config_name.json
 
 # Min time between uploads in ms (1800000 = 30min)
 UPLOADER_MIN_GAP=1800000
