@@ -1,6 +1,11 @@
 {
   "name": "uploader-server",
   "version": "1.0.0",
+  "description": "Automated YouTube uploader — Cloud Run Job",
+  "main": "uploader-server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "googleapis": "^144.0.0",
     "mongodb": "^6.0.0"
