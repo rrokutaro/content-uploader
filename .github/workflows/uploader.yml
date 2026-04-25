@@ -38,6 +38,18 @@ jobs:
       - name: Install npm deps
         run: npm install
 
+      - name: Verify US location
+        run: |
+          LOCATION=$(curl -s https://ipinfo.io/json)
+          echo "Runner location: $LOCATION"
+          COUNTRY=$(echo $LOCATION | python3 -c "import sys,json; print(json.load(sys.stdin).get('country','unknown'))")
+          echo "Country: $COUNTRY"
+          if [ "$COUNTRY" != "US" ]; then
+            echo "❌ Runner is not in US (got: $COUNTRY) — aborting"
+            exit 1
+          fi
+          echo "✅ Runner confirmed US-based"
+          
       - name: Run uploader
         run: |
           node uploader-server.js \
