@@ -41,6 +41,7 @@ const fs            = require('fs');
 const path          = require('path');
 const { spawnSync } = require('child_process');
 const { google }    = require('googleapis');
+const { MongoClient } = require('mongodb');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI ARGUMENT PARSING
@@ -67,6 +68,12 @@ function parseArgs() {
         }
     }
 
+    // Also read from env vars (GitHub Actions passes config via env)
+    if (!opts.configs)  opts.configs  = process.env.UPLOADER_CONFIGS  || null;
+    if (!opts.minGap)   opts.minGap   = process.env.UPLOADER_MIN_GAP  ? parseInt(process.env.UPLOADER_MIN_GAP, 10) : null;
+    if (!opts.window)   opts.window   = process.env.UPLOADER_WINDOW   || null;
+    if (!opts.dryRun)   opts.dryRun   = process.env.UPLOADER_DRY_RUN  === 'true';
+
     if (!opts.configs) {
         console.error('❌  --configs is required.  e.g. --configs config1.json,config2.json');
         process.exit(1);
@@ -80,8 +87,12 @@ function parseArgs() {
 // LOGGER  (stdout + append-only .log file)
 // ─────────────────────────────────────────────────────────────────────────────
 function makeLogger(logFilePath) {
-    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
-    const stream = fs.createWriteStream(logFilePath, { flags: 'a' });
+    const useFile = logFilePath && logFilePath !== 'stdout';
+    let stream = null;
+    if (useFile) {
+        fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+        stream = fs.createWriteStream(logFilePath, { flags: 'a' });
+    }
 
     function write(level, ...parts) {
         const ts  = new Date().toISOString();
@@ -90,7 +101,7 @@ function makeLogger(logFilePath) {
             .join(' ');
         const line = `[${ts}] [${level}] ${msg}`;
         console.log(line);
-        stream.write(line + '\n');
+        if (stream) stream.write(line + '\n');
     }
 
     return {
@@ -158,20 +169,79 @@ function parseVideoFilename(filename) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PERSISTENCE  (.uploader-state.json)
+// PERSISTENCE — MongoDB Atlas (primary) + local JSON fallback
 // ─────────────────────────────────────────────────────────────────────────────
+const STATE_ID   = 'uploader-state';
 const STATE_FILE = path.join(__dirname, '.uploader-state.json');
 
-function loadState() {
-    return readJSON(STATE_FILE) || {
-        lastUploadTime: 0,    // epoch ms — last physical upload on this server
-        configCursor:   0,    // which config index to resume from
-        channelCursors: {},   // { configId: nextChannelIndex }
-        seenUnivs:      {},   // { univ: true } — persisted dedup cache
-    };
+const DEFAULT_STATE = () => ({
+    configCursor:      0,
+    channelCursors:    {},
+    channelLastUpload: {},   // { channelName: epochMs } — per-channel last upload time
+    seenUnivs:         {},
+});
+
+let _mongoClient = null;
+let _mongoDB     = null;
+
+async function getMongoCollection(log) {
+    const uri = process.env.MONGODB_URI;
+    if (!uri) return null;
+    if (!_mongoClient) {
+        log.info('Connecting to MongoDB Atlas...');
+        _mongoClient = new MongoClient(uri, { serverSelectionTimeoutMS: 10_000, connectTimeoutMS: 10_000 });
+        await _mongoClient.connect();
+        _mongoDB = _mongoClient.db(process.env.MONGODB_DB || 'uploader');
+        log.info('MongoDB connected.');
+    }
+    return _mongoDB.collection('state');
 }
 
-function saveState(state) {
+async function closeMongoClient(log) {
+    if (_mongoClient) {
+        try { await _mongoClient.close(); log.info('MongoDB connection closed.'); }
+        catch (e) { log.warn('MongoDB close error: ' + e.message); }
+        _mongoClient = null; _mongoDB = null;
+    }
+}
+
+async function loadState(log) {
+    try {
+        const col = await getMongoCollection(log);
+        if (col) {
+            const doc = await col.findOne({ _id: STATE_ID });
+            if (doc) {
+                log.info('State loaded from MongoDB.');
+                const { _id, ...state } = doc;
+                // Migrate legacy global lastUploadTime if present
+                if (!state.channelLastUpload) state.channelLastUpload = {};
+                return { ...DEFAULT_STATE(), ...state };
+            }
+            log.info('No existing state in MongoDB — starting fresh.');
+            return DEFAULT_STATE();
+        }
+    } catch (e) {
+        log.warn('MongoDB loadState failed, falling back to local: ' + e.message);
+    }
+    const local = readJSON(STATE_FILE);
+    if (local) {
+        log.info('State loaded from local file.');
+        if (!local.channelLastUpload) local.channelLastUpload = {};
+        return { ...DEFAULT_STATE(), ...local };
+    }
+    return DEFAULT_STATE();
+}
+
+async function saveState(state, log) {
+    try {
+        const col = await getMongoCollection(log);
+        if (col) {
+            await col.replaceOne({ _id: STATE_ID }, { _id: STATE_ID, ...state }, { upsert: true });
+            return;
+        }
+    } catch (e) {
+        log.warn('MongoDB saveState failed, falling back to local: ' + e.message);
+    }
     writeJSON(STATE_FILE, state);
 }
 
@@ -461,7 +531,7 @@ function refetchAssets(log) {
 async function run(opts, log) {
     const SCRAPE_LIMIT = 20;
 
-    let state       = loadState();
+    let state = await loadState(log);
     let lastRefetch = 0;
 
     async function maybeRefetch() {
@@ -488,8 +558,9 @@ async function run(opts, log) {
     log.info(`Configs:          ${opts.configList.join(', ')}`);
     log.info(`Dry run:          ${opts.dryRun}`);
     log.info(`Upload window:    ${opts.window || 'unrestricted (UTC)'}`);
-    log.info(`Min gap override: ${opts.minGap != null ? opts.minGap + 'ms' : 'use config value'}`);
+    log.info(`Min gap (per channel): ${opts.minGap != null ? opts.minGap + 'ms' : 'use config value'}`);
     log.info(`Refetch interval: ${opts.refetchInterval}s`);
+    log.info(`State backend:    ${process.env.MONGODB_URI ? 'MongoDB Atlas' : 'local file'}`);
     log.info('══════════════════════════════════════════');
 
     await maybeRefetch();
@@ -561,7 +632,7 @@ async function run(opts, log) {
             log.info(`Nothing to upload for ${configId} — moving on`);
             configIdx = (configIdx + 1) % configCount;
             state.configCursor = configIdx;
-            saveState(state);
+            await saveState(state, log);
             continue;
         }
 
@@ -576,15 +647,8 @@ async function run(opts, log) {
 
         let channelIdx = (state.channelCursors[configId] || 0) % channelCount;
 
-        // ── min-gap enforcement ───────────────────────────────────────────────
-        const minGap  = opts.minGap ?? cfg.scheduled_upload_delay ?? 1_800_000;
-        const elapsed = Date.now() - state.lastUploadTime;
-
-        if (state.lastUploadTime > 0 && elapsed < minGap) {
-            const waitMs = minGap - elapsed;
-            log.info(`Last upload ${Math.floor(elapsed / 60000)}min ago; need ${Math.ceil(minGap / 60000)}min gap. Sleeping ${Math.ceil(waitMs / 1000)}s...`);
-            await sleep(waitMs);
-        }
+        // ── per-channel min-gap is enforced at upload time (see below) ─────────
+        const minGap = opts.minGap ?? cfg.scheduled_upload_delay ?? 0;
 
         // ── video loop ────────────────────────────────────────────────────────
         let uploadedThisCycle = false;
@@ -611,7 +675,7 @@ async function run(opts, log) {
             if (alreadyLive) {
                 log.info(`UNIV ${univ} already live — caching locally + removing from Drive`);
                 state.seenUnivs[univ] = true;
-                saveState(state);
+                await saveState(state, log);
                 if (!opts.dryRun) {
                     try { await deleteDriveFile(driveAuth, fileObj.id, log); }
                     catch (e) { log.error(`Drive delete failed: ${e.message}`); }
@@ -643,10 +707,21 @@ async function run(opts, log) {
                 break;
             }
 
-            // Re-check window (in case we were sleeping for min-gap)
+            // Re-check window
             if (!inUploadWindow(opts.window)) {
                 log.info('Left upload window mid-loop — stopping');
                 break;
+            }
+
+            // ── per-channel min-gap check ─────────────────────────────────────
+            if (minGap > 0) {
+                const lastUpload = state.channelLastUpload[target.name] || 0;
+                const elapsed    = Date.now() - lastUpload;
+                if (lastUpload > 0 && elapsed < minGap) {
+                    const remaining = Math.ceil((minGap - elapsed) / 60000);
+                    log.info(`Channel "${target.name}" uploaded ${Math.floor(elapsed / 60000)}min ago — min gap ${Math.ceil(minGap / 60000)}min not reached (${remaining}min left). Skipping.`);
+                    continue;
+                }
             }
 
             // ── download zip ──────────────────────────────────────────────────
@@ -691,7 +766,7 @@ async function run(opts, log) {
                 }
 
                 // ── bookkeeping ───────────────────────────────────────────────
-                state.lastUploadTime = Date.now();
+                state.channelLastUpload[target.name] = Date.now();
                 state.seenUnivs[univ] = true;
 
                 const countKey = `__daily__${target.name}__${todayKey}`;
@@ -700,7 +775,7 @@ async function run(opts, log) {
                 // Advance channel cursor → next upload goes to the next channel
                 channelIdx = (channelIdx + 1) % channelCount;
                 state.channelCursors[configId] = channelIdx;
-                saveState(state);
+                await saveState(state, log);
 
                 // ── delete from Drive ─────────────────────────────────────────
                 if (cfg.delete_videos_after_uploads !== false) {
@@ -732,7 +807,7 @@ async function run(opts, log) {
         // Advance config cursor for next run
         configIdx = (configIdx + 1) % configCount;
         state.configCursor = configIdx;
-        saveState(state);
+        await saveState(state, log);
 
     } // end config loop
 
@@ -751,5 +826,7 @@ async function run(opts, log) {
         log.error(`Fatal: ${e.message}`);
         if (e.stack) log.error(e.stack);
         process.exit(1);
+    } finally {
+        await closeMongoClient(log);
     }
 })();
