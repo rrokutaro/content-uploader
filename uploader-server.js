@@ -435,7 +435,7 @@ function refetchAssets(log) {
             const dl = spawnSync('gdown', [
                 `https://drive.google.com/uc?id=${fileId}`,
                 '-O', tmpZip,
-                '--quiet', '--fuzzy',
+                '--quiet',
             ], { encoding: 'utf8', timeout: 120_000 });
 
             if (dl.status !== 0 || !fs.existsSync(tmpZip)) {
