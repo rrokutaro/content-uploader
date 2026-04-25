@@ -41,11 +41,17 @@ jobs:
       - name: Verify US location
         run: |
           LOCATION=$(curl -s https://ipinfo.io/json)
-          echo "Runner location: $LOCATION"
+          IP=$(echo $LOCATION | python3 -c "import sys,json; print(json.load(sys.stdin).get('ip','unknown'))")
+          CITY=$(echo $LOCATION | python3 -c "import sys,json; print(json.load(sys.stdin).get('city','unknown'))")
+          REGION=$(echo $LOCATION | python3 -c "import sys,json; print(json.load(sys.stdin).get('region','unknown'))")
           COUNTRY=$(echo $LOCATION | python3 -c "import sys,json; print(json.load(sys.stdin).get('country','unknown'))")
-          echo "Country: $COUNTRY"
+          ORG=$(echo $LOCATION | python3 -c "import sys,json; print(json.load(sys.stdin).get('org','unknown'))")
+          echo "🌍 IP:      $IP"
+          echo "🏙️  City:    $CITY, $REGION"
+          echo "🇺🇸 Country: $COUNTRY"
+          echo "🏢 Org:     $ORG"
           if [ "$COUNTRY" != "US" ]; then
-            echo "❌ Runner is not in US (got: $COUNTRY) — aborting"
+            echo "❌ Runner is not US-based — aborting"
             exit 1
           fi
           echo "✅ Runner confirmed US-based"
