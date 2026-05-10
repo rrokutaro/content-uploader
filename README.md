@@ -275,6 +275,64 @@ UPLOADER_LOOP=true
 MONGODB_URI=mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
 ```
 
+Here's a section you can drop into both READMEs:
+
+---
+
+## Scheduling via cron-job.org (Recommended over GitHub Actions)
+
+GitHub Actions scheduled workflows are unreliable for frequent intervals — runs can be delayed 30–60+ minutes or dropped entirely. [cron-job.org](https://cron-job.org) is a free, no-card-required alternative that triggers `workflow_dispatch` on your workflow directly via the GitHub API.
+
+### Setup
+
+**1. Create a GitHub Personal Access Token (PAT)**
+
+Go to **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**
+
+- Note: `CloudSurf Runner` (or `Video Uploader`)
+- Expiration: No expiration (or your preference)
+- Scopes:
+  - `repo` — required to trigger workflow dispatch
+  - `codespace` — required for CloudSurf Runner only
+
+**2. Create a cron-job.org account**
+
+Go to [cron-job.org](https://cron-job.org) → sign up (free, no credit card)
+
+**3. Create the cronjob**
+
+- **Title:** CloudSurf Runner (or Video Uploader)
+- **URL:**
+  - CloudSurf Runner: `https://api.github.com/repos/<your-username>/CloudSurf-Runner/actions/workflows/main.yml/dispatches`
+  - Video Uploader: `https://api.github.com/repos/<your-username>/video-uploader/actions/workflows/uploader.yml/dispatches`
+- **Request method:** `POST`
+- **Request body:**
+  ```json
+  {"ref": "main"}
+  ```
+- **Headers** (click + ADD for each):
+  - `Authorization` → `Bearer <your PAT>`
+  - `Accept` → `application/vnd.github+json`
+  - `Content-Type` → `application/json`
+- **Schedule:**
+  - CloudSurf Runner: every 30 minutes — `*/30 * * * *`
+  - Video Uploader: every 15 minutes — `*/15 * * * *`
+- **Timeout:** 30 seconds
+- **Notifications:** notify after 3 failures
+
+**4. Remove the schedule trigger from your workflow**
+
+Since cron-job.org handles scheduling, remove the `schedule:` block from your `.yml` file to avoid double-triggering. Keep `workflow_dispatch`:
+
+```yaml
+on:
+  workflow_dispatch:
+```
+
+**5. Test**
+
+Hit **Run now** on the cron-job.org dashboard. A new `workflow_dispatch` run should appear in your GitHub Actions tab within seconds. cron-job.org shows the HTTP response — you want `204 No Content` which means GitHub accepted the trigger successfully.
+
 ---
 
 ## Troubleshooting
