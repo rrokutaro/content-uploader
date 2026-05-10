@@ -1,4 +1,4 @@
-# video-uploader
+# Video Uploader
 
 Automated YouTube upload pipeline. Picks up generated videos from Google Drive,
 deduplicates against live YouTube channels, and uploads on a fair round-robin
